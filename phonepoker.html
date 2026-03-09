@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 优化移动端视口，禁止手动缩放以模拟原生 App 体验 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PRO POKER EQUITY</title>
+  
+  <!-- === iOS 桌面应用专属配置 === -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Poker Equity">
+  <!-- 自动生成一个黑底蓝黑桃的 iOS 桌面图标 -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%230f172a%22/><text y=%2255%22 x=%2250%22 fill=%22%233b82f6%22 font-size=%2270%22 font-family=%22sans-serif%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22>♠</text></svg>">
+  
+  <!-- 引入 React 和 ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- 引入 Babel 以解析 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- 引入 Tailwind CSS 用于页面样式 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    /* 优化移动端触控体验：防止双击导致屏幕放大，消除按键高亮黑框 */
+    * { 
+      touch-action: manipulation; 
+      -webkit-tap-highlight-color: transparent; 
+    }
+    /* 隐藏滚动条但保留滚动功能 */
+    .custom-scrollbar::-webkit-scrollbar { display: none; }
+    .custom-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    
+    /* 适配 iPhone 底部安全区（刘海屏/灵动岛机型） */
+    body {
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-top: env(safe-area-inset-top);
+    }
+  </style>
+</head>
+<body class="bg-[#0f172a]">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback } = React;
+
+    // --- 图标组件 (替换原有的 lucide-react，确保单文件独立运行) ---
+    const Icon = ({ size = 24, className = "", fill = "none", children }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        {children}
+      </svg>
+    );
+    const Plus = (props) => <Icon {...props}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></Icon>;
+    const Trash2 = (props) => <Icon {...props}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></Icon>;
+    const RotateCcw = (props) => <Icon {...props}><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></Icon>;
+    const Play = (props) => <Icon {...props}><polygon points="5 3 19 12 5 21 5 3"></polygon></Icon>;
+    const Info = (props) => <Icon {...props}><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></Icon>;
+    const X = (props) => <Icon {...props}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></Icon>;
+    const Zap = (props) => <Icon {...props}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></Icon>;
+
+    // --- 常量定义 ---
+    const SUITS = [
+      { id: 's', label: '♠', color: 'text-slate-900', name: '黑桃' },
+      { id: 'h', label: '♥', color: 'text-red-600', name: '红桃' },
+      { id: 'd', label: '♦', color: 'text-blue-600', name: '方块' },
+      { id: 'c', label: '♣', color: 'text-green-700', name: '梅花' },
+    ];
+
+    const RANKS = [
+      { id: 14, label: 'A' }, { id: 13, label: 'K' }, { id: 12, label: 'Q' },
+      { id: 11, label: 'J' }, { id: 10, label: '10' }, { id: 9, label: '9' },
+      { id: 8, label: '8' }, { id: 7, label: '7' }, { id: 6, label: '6' },
+      { id: 5, label: '5' }, { id: 4, label: '4' }, { id: 3, label: '3' },
+      { id: 2, label: '2' }
+    ];
+
+    // --- 扑克逻辑引擎 ---
+    const evaluateHand = (cards) => {
+      const sorted = [...cards].sort((a, b) => b.rank - a.rank);
+      const ranksCount = new Int8Array(15);
+      const suitsCount = { s: 0, h: 0, d: 0, c: 0 };
+      
+      for (let i = 0; i < sorted.length; i++) {
+        ranksCount[sorted[i].rank]++;
+        suitsCount[sorted[i].suit]++;
+      }
+
+      let flushSuit = null;
+      for (const s in suitsCount) {
+        if (suitsCount[s] >= 5) { flushSuit = s; break; }
+      }
+      
+      const flushCards = flushSuit ? sorted.filter(c => c.suit === flushSuit) : null;
+
+      let straightHigh = -1;
+      let consecutive = 0;
+      let lastRank = -1;
+      
+      if (ranksCount[14] && ranksCount[5] && ranksCount[4] && ranksCount[3] && ranksCount[2]) {
+        straightHigh = 5;
+      }
+      
+      for (let r = 14; r >= 2; r--) {
+        if (ranksCount[r]) {
+          if (lastRank === -1 || lastRank - r === 1) {
+            consecutive++;
+          } else {
+            consecutive = 1;
+          }
+          lastRank = r;
+          if (consecutive >= 5) {
+            straightHigh = Math.max(straightHigh, r + 4);
+            break;
+          }
+        } else {
+          consecutive = 0;
+          lastRank = -1;
+        }
+      }
+
+      if (flushCards) {
+        let sfHigh = -1;
+        let fRanks = new Set(flushCards.map(c => c.rank));
+        if (fRanks.has(14) && fRanks.has(5) && fRanks.has(4) && fRanks.has(3) && fRanks.has(2)) sfHigh = 5;
+        for (let i = 0; i <= flushCards.length - 5; i++) {
+          if (flushCards[i].rank - flushCards[i+4].rank === 4) {
+            sfHigh = Math.max(sfHigh, flushCards[i].rank);
+            break;
+          }
+        }
+        if (sfHigh !== -1) return { score: 8000000 + sfHigh, type: "同花顺" };
+      }
+
+      for (let r = 14; r >= 2; r--) {
+        if (ranksCount[r] === 4) {
+          const kicker = sorted.find(c => c.rank !== r).rank;
+          return { score: 7000000 + r * 20 + kicker, type: "四条" };
+        }
+      }
+
+      let tripRank = -1;
+      let pairRank = -1;
+      for (let r = 14; r >= 2; r--) {
+        if (ranksCount[r] === 3 && tripRank === -1) tripRank = r;
+        else if (ranksCount[r] >= 2 && pairRank === -1) pairRank = r;
+      }
+      if (tripRank !== -1 && pairRank !== -1) {
+        return { score: 6000000 + tripRank * 20 + pairRank, type: "葫芦" };
+      }
+
+      if (flushCards) {
+        const score = flushCards.slice(0, 5).reduce((acc, c, i) => acc + c.rank * Math.pow(15, 4 - i), 5000000);
+        return { score, type: "同花" };
+      }
+
+      if (straightHigh !== -1) return { score: 4000000 + straightHigh, type: "顺子" };
+
+      if (tripRank !== -1) {
+        const kickers = sorted.filter(c => c.rank !== tripRank).slice(0, 2);
+        return { score: 3000000 + tripRank * 400 + kickers[0].rank * 20 + kickers[1].rank, type: "三条" };
+      }
+
+      let pairs = [];
+      for (let r = 14; r >= 2; r--) if (ranksCount[r] === 2) pairs.push(r);
+      if (pairs.length >= 2) {
+        const kicker = sorted.find(c => c.rank !== pairs[0] && c.rank !== pairs[1]).rank;
+        return { score: 2000000 + pairs[0] * 400 + pairs[1] * 20 + kicker, type: "两对" };
+      }
+
+      if (pairs.length === 1) {
+        const kickers = sorted.filter(c => c.rank !== pairs[0]).slice(0, 3);
+        return { score: 1000000 + pairs[0] * 8000 + kickers[0].rank * 400 + kickers[1].rank * 20 + kickers[2].rank, type: "一对" };
+      }
+
+      return { score: sorted.slice(0, 5).reduce((acc, c, i) => acc + c.rank * Math.pow(15, 4 - i), 0), type: "高牌" };
+    };
+
+    // --- 子组件 ---
+    const CardDisplay = ({ card, onClick, className = "", placeholder = "" }) => {
+      if (!card) {
+        return (
+          <div onClick={onClick} className={`w-12 h-16 md:w-16 md:h-22 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-blue-400/5 transition-all shadow-inner ${className}`}>
+            <span className="text-[10px] text-slate-600 font-black uppercase tracking-widest">{placeholder}</span>
+          </div>
+        );
+      }
+      const suitObj = SUITS.find(s => s.id === card.suit);
+      const rankObj = RANKS.find(r => r.id === card.rank);
+      return (
+        <div onClick={onClick} className={`w-12 h-16 md:w-16 md:h-22 bg-white border border-gray-200 rounded-xl flex flex-col items-center justify-between p-1.5 cursor-pointer hover:scale-105 active:scale-95 transition-all shadow-lg ring-1 ring-black/5 ${className}`}>
+          <div className={`text-xs md:text-sm font-black self-start leading-none ${suitObj.color}`}>{rankObj.label}</div>
+          <div className={`text-2xl md:text-3xl leading-none ${suitObj.color}`}>{suitObj.label}</div>
+          <div className={`text-xs md:text-sm font-black self-end leading-none rotate-180 ${suitObj.color}`}>{rankObj.label}</div>
+        </div>
+      );
+    };
+
+    // --- 主程序 ---
+    function App() {
+      const [players, setPlayers] = useState([
+        { id: 1, cards: [null, null], results: null },
+        { id: 2, cards: [null, null], results: null }
+      ]);
+      const [board, setBoard] = useState([null, null, null, null, null]);
+      const [isCalculating, setIsCalculating] = useState(false);
+      const [calcMode, setCalcMode] = useState("混合模拟");
+      const [showSelector, setShowSelector] = useState(null); 
+
+      const usedCardsStrings = useMemo(() => {
+        const list = [];
+        players.forEach(p => p.cards.forEach(c => c && list.push(`${c.rank}${c.suit}`)));
+        board.forEach(c => c && list.push(`${c.rank}${c.suit}`));
+        return list;
+      }, [players, board]);
+
+      const runHybridSimulation = () => {
+        const activePlayers = players.filter(p => p.cards.every(c => c !== null));
+        if (activePlayers.length < 2) return;
+
+        setIsCalculating(true);
+
+        setTimeout(() => {
+          const deck = [];
+          RANKS.forEach(r => SUITS.forEach(s => {
+            if (!usedCardsStrings.includes(`${r.id}${s.id}`)) deck.push({ rank: r.id, suit: s.id });
+          }));
+
+          const emptyBoardSlots = board.filter(c => c === null).length;
+          let wins = activePlayers.map(() => 0);
+          let handTypes = activePlayers.map(() => ({}));
+          let globalTies = 0; 
+          let totalTrials = 0;
+
+          const processTrial = (fullBoard) => {
+            const scores = activePlayers.map(p => evaluateHand([...p.cards, ...fullBoard]));
+            let maxScore = -1;
+            for (let i = 0; i < scores.length; i++) {
+              if (scores[i].score > maxScore) maxScore = scores[i].score;
+            }
+            
+            let winners = [];
+            for (let i = 0; i < scores.length; i++) {
+              if (scores[i].score === maxScore) winners.push(i);
+            }
+
+            if (winners.length > 1) {
+              globalTies++;
+            } else {
+              wins[winners[0]]++;
+            }
+
+            scores.forEach((s, idx) => {
+              handTypes[idx][s.type] = (handTypes[idx][s.type] || 0) + 1;
+            });
+          };
+
+          if (emptyBoardSlots > 0 && emptyBoardSlots <= 2) {
+            setCalcMode("精确计算");
+            if (emptyBoardSlots === 1) {
+              totalTrials = deck.length;
+              for (let i = 0; i < deck.length; i++) {
+                processTrial(board.map(b => b || deck[i]));
+              }
+            } else if (emptyBoardSlots === 2) {
+              totalTrials = (deck.length * (deck.length - 1)) / 2;
+              for (let i = 0; i < deck.length; i++) {
+                for (let j = i + 1; j < deck.length; j++) {
+                  let slotIdx = 0;
+                  processTrial(board.map(b => b || (slotIdx++ === 0 ? deck[i] : deck[j])));
+                }
+              }
+            }
+          } else {
+            setCalcMode("蒙特卡洛模拟");
+            totalTrials = 15000;
+            for (let i = 0; i < totalTrials; i++) {
+              const currentDeck = [...deck];
+              for (let k = currentDeck.length - 1; k > 0; k--) {
+                const j = Math.floor(Math.random() * (k + 1));
+                [currentDeck[k], currentDeck[j]] = [currentDeck[j], currentDeck[k]];
+              }
+              let slotIdx = 0;
+              processTrial(board.map(b => b || currentDeck[slotIdx++]));
+            }
+          }
+
+          setPlayers(players.map(p => {
+            const aIdx = activePlayers.findIndex(ap => ap.id === p.id);
+            if (aIdx !== -1) {
+              return {
+                ...p,
+                results: {
+                  win: (wins[aIdx] / totalTrials) * 100,
+                  tie: (globalTies / totalTrials) * 100, 
+                  bestHand: Object.entries(handTypes[aIdx]).sort((a,b) => b[1] - a[1])[0]?.[0] || "N/A"
+                }
+              };
+            }
+            return { ...p, results: null }; 
+          }));
+          setIsCalculating(false);
+        }, 50);
+      };
+
+      return (
+        <div className="min-h-screen bg-[#0f172a] text-white p-4 md:p-8 font-sans pb-16">
+          <div className="max-w-5xl mx-auto">
+            <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4 border-b border-slate-800 pb-6">
+              <div>
+                <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-3">
+                  <div className="p-2 bg-blue-600 rounded-lg shadow-lg shadow-blue-900/20">
+                    <Zap className="text-white" fill="currentColor" size={20} md={{size: 24}}/>
+                  </div>
+                  <span className="bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent italic">POKER ENGINE</span>
+                </h1>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-black uppercase tracking-wider ${isCalculating ? 'bg-amber-500 text-black' : 'bg-blue-600 text-white'}`}>
+                    {isCalculating ? '运算中...' : calcMode}
+                  </span>
+                  <p className="text-slate-500 text-[10px] font-bold uppercase tracking-[0.2em]">Equity Calculator</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { setPlayers(players.map(p => ({...p, results: null, cards: [null, null]}))); setBoard([null, null, null, null, null]); }} className="p-3 md:p-2.5 bg-slate-800 rounded-xl border border-slate-700 hover:bg-slate-700 hover:border-slate-600 transition-all text-slate-400">
+                  <RotateCcw size={20} />
+                </button>
+                <button 
+                  onClick={runHybridSimulation}
+                  disabled={isCalculating}
+                  className={`flex-1 md:flex-none flex justify-center items-center gap-3 px-8 py-3 md:py-2.5 rounded-xl font-black shadow-2xl transition-all ${
+                    isCalculating ? 'bg-slate-800 text-slate-600' : 'bg-white text-slate-900 active:bg-blue-200'
+                  }`}
+                >
+                  <Play size={16} fill="currentColor"/> {isCalculating ? '正在分析' : '开始计算'}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              <div className="lg:col-span-8 space-y-6">
+                <div className="bg-slate-800/30 p-5 md:p-8 rounded-[2rem] border border-slate-700/50 backdrop-blur-xl shadow-2xl">
+                  <div className="flex items-center justify-between mb-6 md:mb-8">
+                     <h2 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
+                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
+                      Board / 公共牌
+                    </h2>
+                    <div className="text-[10px] text-slate-600 font-mono bg-black/20 px-3 py-1 rounded-full border border-white/5">剩余: {52 - usedCardsStrings.length}/52</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 sm:gap-4 md:gap-6 justify-center lg:justify-start">
+                    {board.map((card, idx) => (
+                      <CardDisplay 
+                        key={idx} card={card} 
+                        placeholder={idx < 3 ? "FLOP" : idx === 3 ? "TURN" : "RIVER"}
+                        onClick={() => setShowSelector({ type: 'board', index: idx })} 
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {players.map((player, pIdx) => (
+                    <div key={player.id} className={`p-5 md:p-6 rounded-[1.5rem] border transition-all duration-500 relative group overflow-hidden ${player.results ? 'bg-slate-800/60 border-blue-500/30 shadow-blue-900/5' : 'bg-slate-800/10 border-slate-800'}`}>
+                      <div className="flex items-center justify-between mb-5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-black text-white bg-blue-600/20 border border-blue-500/20 px-2.5 py-1 rounded-lg">P{pIdx + 1}</span>
+                          {player.results && <span className="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md uppercase">{player.results.bestHand}</span>}
+                        </div>
+                        <button onClick={() => setPlayers(players.filter(p => p.id !== player.id))} className="text-slate-500 hover:text-red-500 transition-colors p-2 md:p-1 rounded-full bg-slate-800/50 md:bg-transparent">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex gap-2">
+                          {player.cards.map((card, cIdx) => (
+                            <CardDisplay key={cIdx} card={card} className="w-14 h-20 md:w-16 md:h-22" placeholder="HOLE" onClick={() => setShowSelector({ type: 'player', id: player.id, cardIndex: cIdx })} />
+                          ))}
+                        </div>
+                        <div className="flex-1 text-right">
+                          {player.results ? (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-700">
+                              <div className="text-3xl font-black text-blue-400 leading-none tracking-tighter">{player.results.win.toFixed(1)}<span className="text-lg ml-0.5">%</span></div>
+                              <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest mt-2 flex flex-col items-end">
+                                <span>Win Equity</span>
+                                {player.results.tie > 0 && <span className="text-amber-500/80">Tie: {player.results.tie.toFixed(1)}%</span>}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-slate-800 text-[10px] font-black uppercase italic tracking-tighter opacity-30">Pending...</div>
+                          )}
+                        </div>
+                      </div>
+                      {player.results && (
+                        <div className="mt-6 w-full bg-slate-900/50 h-1.5 rounded-full overflow-hidden border border-white/5">
+                          <div className="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(59,130,246,0.5)]" style={{ width: `${player.results.win}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {players.length < 9 && (
+                    <button onClick={() => setPlayers([...players, { id: Date.now(), cards: [null, null], results: null }])} className="border-2 border-dashed border-slate-800 rounded-[1.5rem] flex flex-col items-center justify-center p-8 hover:bg-slate-800/20 hover:border-slate-600 transition-all text-slate-600 active:bg-slate-800/50">
+                      <Plus className="mb-2" size={28} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">Add Player</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="lg:col-span-4 space-y-6">
+                <div className="bg-gradient-to-br from-blue-600/10 to-slate-800/40 p-6 md:p-8 rounded-[2.5rem] border border-blue-500/10 shadow-2xl">
+                  <h3 className="text-xs font-black flex items-center gap-3 mb-6 text-blue-400 uppercase tracking-[0.2em] italic">
+                    <Info size={16} /> 引擎说明
+                  </h3>
+                  <div className="space-y-6 text-[11px] leading-relaxed text-slate-400">
+                    <div className="flex gap-4">
+                      <div className="w-6 h-6 bg-blue-600/20 rounded-lg flex items-center justify-center font-black text-blue-400 border border-blue-500/20 flex-shrink-0">1</div>
+                      <p><span className="text-slate-200 font-black">结果精确性</span>: 所有玩家的胜率加上平分底池率 (Tie) 将严格等于 100%。真正的 Equity = 胜率 + 平局率/赢家数。</p>
+                    </div>
+                    <div className="flex gap-4">
+                      <div className="w-6 h-6 bg-blue-600/20 rounded-lg flex items-center justify-center font-black text-blue-400 border border-blue-500/20 flex-shrink-0">2</div>
+                      <p><span className="text-slate-200 font-black">蒙特卡洛引擎</span>: 在翻牌前/翻牌阶段，通过 <span className="text-white">15,000次</span> 无偏见随机发牌样本收敛胜率结果。</p>
+                    </div>
+                    <div className="p-4 bg-black/30 rounded-2xl border border-white/5 text-slate-500 italic">
+                      点击卡牌插槽可以直接选择具体的点数和花色。已选中的卡牌会自动在备选项中置灰。
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {showSelector && (
+            <div className="fixed inset-0 z-[100] flex flex-col justify-end md:justify-center p-0 md:p-4 bg-slate-950/90 backdrop-blur-xl">
+              <div className="bg-[#1e293b] w-full md:max-w-3xl rounded-t-[2rem] md:rounded-[3rem] shadow-[0_-10px_40px_rgba(0,0,0,0.5)] md:shadow-[0_0_100px_rgba(0,0,0,0.5)] overflow-hidden border-t md:border border-slate-700/50 flex flex-col max-h-[90vh]">
+                <div className="flex items-center justify-between p-6 md:p-8 border-b border-slate-800">
+                  <div>
+                    <h3 className="text-xl md:text-2xl font-black italic tracking-tighter">SELECT CARD</h3>
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">选择一张可用的扑克牌</p>
+                  </div>
+                  <button onClick={() => setShowSelector(null)} className="p-3 hover:bg-slate-800 rounded-full text-slate-500 transition-colors active:bg-slate-700">
+                    <X size={24} />
+                  </button>
+                </div>
+                
+                <div className="p-4 md:p-8 overflow-y-auto custom-scrollbar flex-1 pb-24 md:pb-8">
+                  <div className="grid grid-cols-1 gap-8 md:gap-10">
+                    {SUITS.map(suit => (
+                      <div key={suit.id} className="relative">
+                        <div className={`flex items-center gap-3 text-sm font-black uppercase mb-4 ${suit.color}`}>
+                          <span className="text-2xl md:text-3xl">{suit.label}</span> {suit.name}
+                        </div>
+                        <div className="grid grid-cols-7 md:grid-cols-13 gap-1.5 md:gap-2.5">
+                          {RANKS.map(rank => {
+                            const isUsed = usedCardsStrings.includes(`${rank.id}${suit.id}`);
+                            return (
+                              <button
+                                key={rank.id}
+                                disabled={isUsed}
+                                onClick={() => {
+                                  const newCard = { rank: rank.id, suit: suit.id };
+                                  if (showSelector.type === 'player') {
+                                    const newPlayers = [...players];
+                                    const pIdx = newPlayers.findIndex(p => p.id === showSelector.id);
+                                    newPlayers[pIdx].cards[showSelector.cardIndex] = newCard;
+                                    setPlayers(newPlayers);
+                                  } else {
+                                    const newBoard = [...board];
+                                    newBoard[showSelector.index] = newCard;
+                                    setBoard(newBoard);
+                                  }
+                                  setShowSelector(null);
+                                }}
+                                className={`relative h-14 md:h-20 rounded-[0.6rem] md:rounded-xl flex flex-col items-center justify-center transition-all border-2 overflow-hidden shadow-sm ${
+                                  isUsed 
+                                  ? 'bg-slate-900 border-slate-900 opacity-20 cursor-not-allowed' 
+                                  : `bg-white border-white active:scale-90 shadow-md`
+                                }`}
+                              >
+                                {!isUsed && (
+                                  <>
+                                    <span className={`text-[9px] md:text-[10px] font-black absolute top-1 left-1.5 ${suit.color}`}>{rank.label}</span>
+                                    <span className={`text-base md:text-lg font-black ${suit.color} mt-1`}>{rank.label}</span>
+                                    <span className={`text-sm md:text-base leading-none ${suit.color} opacity-30`}>{suit.label}</span>
+                                  </>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4 md:p-8 bg-slate-900/90 backdrop-blur-md flex gap-3 border-t border-slate-800/50 absolute bottom-0 w-full md:relative pb-safe">
+                  <button onClick={() => {
+                    if (showSelector.type === 'player') {
+                      const newPlayers = [...players];
+                      const pIdx = newPlayers.findIndex(p => p.id === showSelector.id);
+                      newPlayers[pIdx].cards[showSelector.cardIndex] = null;
+                      setPlayers(newPlayers);
+                    } else {
+                      const newBoard = [...board];
+                      newBoard[showSelector.index] = null;
+                      setBoard(newBoard);
+                    }
+                    setShowSelector(null);
+                  }} className="flex-1 py-4 bg-red-500/10 text-red-500 rounded-2xl active:bg-red-500/20 font-black text-xs uppercase tracking-widest transition-all border border-red-500/20">Clear</button>
+                  <button onClick={() => setShowSelector(null)} className="flex-1 py-4 bg-slate-700 text-white rounded-2xl active:bg-slate-600 font-black text-xs uppercase tracking-widest transition-all">Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // 渲染应用
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
