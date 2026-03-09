@@ -133,9 +133,10 @@
         if (sfHigh !== -1) return { score: 8000000 + sfHigh, type: "同花顺" };
       }
 
+      // 修正：确保在不足 5 张牌时获取 kicker 不会引发错误
       for (let r = 14; r >= 2; r--) {
         if (ranksCount[r] === 4) {
-          const kicker = sorted.find(c => c.rank !== r).rank;
+          const kicker = sorted.find(c => c.rank !== r)?.rank || 0;
           return { score: 7000000 + r * 20 + kicker, type: "四条" };
         }
       }
@@ -159,19 +160,24 @@
 
       if (tripRank !== -1) {
         const kickers = sorted.filter(c => c.rank !== tripRank).slice(0, 2);
-        return { score: 3000000 + tripRank * 400 + kickers[0].rank * 20 + kickers[1].rank, type: "三条" };
+        const k1 = kickers[0]?.rank || 0;
+        const k2 = kickers[1]?.rank || 0;
+        return { score: 3000000 + tripRank * 400 + k1 * 20 + k2, type: "三条" };
       }
 
       let pairs = [];
       for (let r = 14; r >= 2; r--) if (ranksCount[r] === 2) pairs.push(r);
       if (pairs.length >= 2) {
-        const kicker = sorted.find(c => c.rank !== pairs[0] && c.rank !== pairs[1]).rank;
+        const kicker = sorted.find(c => c.rank !== pairs[0] && c.rank !== pairs[1])?.rank || 0;
         return { score: 2000000 + pairs[0] * 400 + pairs[1] * 20 + kicker, type: "两对" };
       }
 
       if (pairs.length === 1) {
         const kickers = sorted.filter(c => c.rank !== pairs[0]).slice(0, 3);
-        return { score: 1000000 + pairs[0] * 8000 + kickers[0].rank * 400 + kickers[1].rank * 20 + kickers[2].rank, type: "一对" };
+        const k1 = kickers[0]?.rank || 0;
+        const k2 = kickers[1]?.rank || 0;
+        const k3 = kickers[2]?.rank || 0;
+        return { score: 1000000 + pairs[0] * 8000 + k1 * 400 + k2 * 20 + k3, type: "一对" };
       }
 
       return { score: sorted.slice(0, 5).reduce((acc, c, i) => acc + c.rank * Math.pow(15, 4 - i), 0), type: "高牌" };
@@ -229,7 +235,6 @@
 
           const emptyBoardSlots = board.filter(c => c === null).length;
           let wins = activePlayers.map(() => 0);
-          let handTypes = activePlayers.map(() => ({}));
           let globalTies = 0; 
           let totalTrials = 0;
 
@@ -250,10 +255,6 @@
             } else {
               wins[winners[0]]++;
             }
-
-            scores.forEach((s, idx) => {
-              handTypes[idx][s.type] = (handTypes[idx][s.type] || 0) + 1;
-            });
           };
 
           if (emptyBoardSlots > 0 && emptyBoardSlots <= 2) {
@@ -289,12 +290,16 @@
           setPlayers(players.map(p => {
             const aIdx = activePlayers.findIndex(ap => ap.id === p.id);
             if (aIdx !== -1) {
+              // 核心修复：根据当前已选的牌计算当前的真实牌型，而不是最常模拟出的牌型
+              const currentKnownCards = [...p.cards, ...board.filter(c => c !== null)];
+              const currentHandType = evaluateHand(currentKnownCards).type;
+
               return {
                 ...p,
                 results: {
                   win: (wins[aIdx] / totalTrials) * 100,
                   tie: (globalTies / totalTrials) * 100, 
-                  bestHand: Object.entries(handTypes[aIdx]).sort((a,b) => b[1] - a[1])[0]?.[0] || "N/A"
+                  bestHand: currentHandType
                 }
               };
             }
